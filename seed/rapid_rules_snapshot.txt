@@ -1,0 +1,18 @@
+Google Cloud Rapid Agent Hackathon -- rules snapshot (demo source)
+
+Submission deadline: 2026-06-11 14:00 PDT.
+Internal freeze deadline: 2026-06-09 23:59 PDT.
+Video upload deadline: 2026-06-11 13:00 PDT.
+
+Build requirement: projects must use Gemini models on Agent Platform and Google
+Cloud Agent Builder. All projects are required to integrate at least one
+participating partner's MCP server.
+
+Build requirement: the agent must move beyond chat and complete multi-step tasks
+under user oversight.
+
+Eligibility: participants must be above the legal age of majority in their place
+of residence. Residents of certain sanctioned jurisdictions are not eligible.
+
+Required submission assets: a hosted project URL, a public open-source repository
+with a license visible at the repo top, and an approximately 3-minute demo video.

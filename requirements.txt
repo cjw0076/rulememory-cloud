@@ -1,0 +1,15 @@
+# RuleMemory Cloud runtime dependencies.
+# Mock mode needs only fastapi + uvicorn + pydantic (httpx is pulled in by
+# fastapi/starlette). Live mode additionally uses google-genai + pymongo, which
+# import lazily so a missing dep degrades to mock instead of crashing boot.
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+httpx>=0.27
+
+# --- live mode (Gemini reasoning) ---
+google-genai>=1.0
+
+# --- live mode (MongoDB Atlas persistence) ---
+pymongo>=4.8
