@@ -41,7 +41,7 @@ gcloud run deploy "${SERVICE}" \
   --source . \
   --allow-unauthenticated \
   --port 8080 \
-  --memory 512Mi \
+  --memory "${MEMORY:-1Gi}" \
   --set-env-vars "${ENV_VARS}"
 
 echo ">> Hosted URL:"

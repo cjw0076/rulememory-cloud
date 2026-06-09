@@ -44,6 +44,7 @@ class MongoMcpClient:
         self.database = database
         self.collection = collection
         self._id = 0
+        self._session_id: str | None = None  # MCP streamable-HTTP session
 
     @property
     def live(self) -> bool:
@@ -52,6 +53,41 @@ class MongoMcpClient:
     def _next_id(self) -> int:
         self._id += 1
         return self._id
+
+    def _headers(self) -> dict[str, str]:
+        h = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        if self._session_id:
+            h["Mcp-Session-Id"] = self._session_id
+        return h
+
+    def _ensure_session(self, client: Any) -> None:
+        """MCP streamable HTTP requires an initialize handshake before tools/call.
+        Sends `initialize`, captures the Mcp-Session-Id header, then the
+        `notifications/initialized` ack. Runs once per client lifetime."""
+        if self._session_id is not None:
+            return
+        init = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "rulememory", "version": "1.0"},
+            },
+        }
+        resp = client.post(f"{self.base_url}/mcp", json=init, headers=self._headers())
+        resp.raise_for_status()
+        self._session_id = resp.headers.get("mcp-session-id")
+        # Acknowledge initialization (notification: no id, expects 202).
+        client.post(
+            f"{self.base_url}/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers=self._headers(),
+        )
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Invoke an MCP tool. Returns a normalized dict:
@@ -73,12 +109,9 @@ class MongoMcpClient:
             "method": "tools/call",
             "params": {"name": name, "arguments": arguments},
         }
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
         with httpx.Client(timeout=30.0) as client:
-            resp = client.post(f"{self.base_url}/mcp", json=payload, headers=headers)
+            self._ensure_session(client)
+            resp = client.post(f"{self.base_url}/mcp", json=payload, headers=self._headers())
             resp.raise_for_status()
             data = _parse_mcp_response(resp.text)
         return {

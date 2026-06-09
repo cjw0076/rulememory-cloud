@@ -96,7 +96,14 @@ class RuleMemoryAgent:
                 e.stale_after_utc = stale_after_default(24, at)
 
         # Partner MCP: write the facts to MongoDB through the MongoDB MCP server.
-        docs = [e.model_dump(mode="json") for e in entries]
+        # Pin _id to entry_id so the authoritative store.upsert below REPLACES the
+        # same document (idempotent) instead of creating a second doc that would
+        # violate the unique entry_id index when the MCP transport is live.
+        docs = []
+        for e in entries:
+            d = e.model_dump(mode="json")
+            d["_id"] = e.entry_id
+            docs.append(d)
         mcp_res = self.mcp.insert_many(docs)
         transcript.add(
             "mcp.insert-many",
