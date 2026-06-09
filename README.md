@@ -1,5 +1,8 @@
 # RuleMemory Cloud
 
+> **▶ Live:** https://rulememory-cloud-516399822756.us-central1.run.app  ·  **▶ 60-second demo video:** [https://github.com/cjw0076/rulememory-cloud/releases/download/demo-v1/rulememory_cloud_demo.mp4](https://github.com/cjw0076/rulememory-cloud/releases/download/demo-v1/rulememory_cloud_demo.mp4)
+
+
 A Gemini-powered, MongoDB-backed agent that turns contest/launch **rules pages**
 into auditable, queryable memory — and runs a **multi-step task under user
 oversight**, not just chat.
