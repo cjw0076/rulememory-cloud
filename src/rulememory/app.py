@@ -1,20 +1,23 @@
 """FastAPI HTTP surface for Cloud Run.
 
 Endpoints:
-  GET  /            -> tiny human landing page (so the hosted URL renders)
-  GET  /health      -> liveness + which backends are live vs mock (Cloud Run probe)
-  POST /ingest      -> step 1: extract facts from a rules page and remember them
-  POST /run         -> full multi-step task, returns the inspectable transcript
-  GET  /deadlines   -> deadlines expiring within ?hours=24
-  GET  /stale       -> flag stale assumptions
-  POST /ask         -> grounded NL answer over remembered facts
-  GET  /entries     -> dump remembered facts
+  GET  /                 -> single-page web UI (judge-facing demo console)
+  GET  /health           -> liveness + which backends are live vs mock (Cloud Run probe)
+  POST /ingest           -> step 1: extract facts from a rules page and remember them
+  POST /run              -> full multi-step task, returns the inspectable transcript
+  GET  /deadlines        -> deadlines expiring within ?hours=24
+  GET  /stale            -> flag stale assumptions
+  POST /ask              -> grounded NL answer over EXISTING remembered facts
+  GET  /entries          -> dump remembered facts (raw)
+  GET  /memory           -> persisted entries with provenance + stale flags (UI)
+  GET  /memory/deadlines -> upcoming deadlines within ?hours=N (UI)
 
 The single Cloud Run container listens on $PORT (default 8080).
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from fastapi import FastAPI
@@ -25,9 +28,47 @@ from . import __version__
 from .config import load_settings
 from .factory import build_agent
 from .agent import Transcript
+from .models import RuleEntry, now_utc
+from .store import deadlines_expiring_within
+from .ui import INDEX_HTML
 
 settings = load_settings()
 agent = build_agent(settings)
+
+
+def _seed_demo_assumption() -> None:
+    """Seed one PRIOR, already-stale assumption ("use Python 2") so a judge's
+    very first ingest visibly SUPERSEDES it (the pre-filled example requires
+    Python 3.12) and the stale-flag step has a real hit. Idempotent and only
+    runs when memory is empty, so it never disturbs an already-populated live
+    cluster.
+    """
+    try:
+        if agent.store.count() != 0:
+            return
+        from datetime import datetime, timezone
+
+        from .models import RuleEntry, SourceRef
+
+        agent.store.upsert(
+            RuleEntry(
+                entry_id="seed-assumption-001",
+                entry_type="rule",
+                title="Build requirement: use Python 2",
+                summary="Earlier assumption: build the agent runtime on Python 2. "
+                "Revisit — likely outdated.",
+                confidence=0.5,
+                # Already past its stale window relative to the demo clock.
+                stale_after_utc=datetime(2026, 6, 9, 0, 0, tzinfo=timezone.utc),
+                source_refs=[SourceRef(source_id="prior-session-log")],
+                labels=["assumption", "rule"],
+            )
+        )
+    except Exception:  # never let seeding break boot
+        pass
+
+
+_seed_demo_assumption()
 
 app = FastAPI(title="RuleMemory Cloud", version=__version__)
 
@@ -63,17 +104,27 @@ def _status() -> dict[str, Any]:
     }
 
 
+def _entry_view(e: RuleEntry, at: datetime) -> dict[str, Any]:
+    """Serialize a stored fact for the UI: provenance + computed stale flag."""
+    src = e.source_refs[0].source_id if e.source_refs else ""
+    return {
+        "id": e.entry_id,
+        "type": e.entry_type,
+        "title": e.title,
+        "text": e.summary,
+        "status": e.status,
+        "confidence": e.confidence,
+        "source": src,
+        "created_at": e.created_at_utc.isoformat() if e.created_at_utc else None,
+        "expires_at": e.expires_at_utc.isoformat() if e.expires_at_utc else None,
+        "stale_after": e.stale_after_utc.isoformat() if e.stale_after_utc else None,
+        "stale": e.is_stale(at),
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def root() -> str:
-    s = _status()
-    return f"""<!doctype html><html><head><meta charset="utf-8">
-<title>RuleMemory Cloud</title></head><body style="font-family:system-ui;max-width:42rem;margin:3rem auto">
-<h1>RuleMemory Cloud</h1>
-<p>Gemini-powered, MongoDB-backed contest-facts agent (MongoDB partner track).</p>
-<p><b>mode:</b> {s['mode']} &middot; <b>reasoner:</b> {s['reasoner']} &middot;
-<b>store:</b> {s['store_backend']} &middot; <b>mcp:</b> {s['mcp_transport']}</p>
-<p>Try <code>GET /health</code>, <code>POST /run</code>, <code>GET /deadlines?hours=24</code>.</p>
-</body></html>"""
+    return INDEX_HTML
 
 
 @app.get("/health")
@@ -120,3 +171,32 @@ def ask(body: AskBody) -> dict[str, Any]:
 @app.get("/entries")
 def entries() -> dict[str, Any]:
     return {"entries": [e.model_dump(mode="json") for e in agent.store.all()]}
+
+
+@app.get("/memory")
+def memory() -> dict[str, Any]:
+    """Persisted memory for the UI: every stored fact with provenance and a
+    freshly-computed stale flag. Demonstrates persistence across sessions."""
+    at = now_utc()
+    rows = [_entry_view(e, at) for e in agent.store.all()]
+    # Stable, useful ordering: deadlines first (soonest first), then the rest.
+    rows.sort(key=lambda r: (r["type"] != "deadline", r["expires_at"] or "", r["id"]))
+    return {
+        "count": len(rows),
+        "backend": agent.store.backend(),
+        "as_of": at.isoformat(),
+        "entries": rows,
+    }
+
+
+@app.get("/memory/deadlines")
+def memory_deadlines(hours: float = 24.0) -> dict[str, Any]:
+    """Upcoming deadlines within N hours, computed over persisted memory."""
+    at = now_utc()
+    hits = deadlines_expiring_within(agent.store, hours, at)
+    return {
+        "hours": hours,
+        "as_of": at.isoformat(),
+        "count": len(hits),
+        "deadlines": [_entry_view(e, at) for e in hits],
+    }

@@ -6,6 +6,7 @@ deliberately small so it round-trips cleanly into a single MongoDB collection.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -64,3 +65,33 @@ class RuleEntry(BaseModel):
         at = at or now_utc()
         delta_hours = (self.expires_at_utc - at).total_seconds() / 3600.0
         return 0 <= delta_hours <= hours
+
+    def topic_key(self) -> str:
+        """A coarse, version-agnostic identity for conflict detection.
+
+        Two facts that talk about the same subject but carry a different
+        value/version (e.g. "use Python 2" vs "use Python 3.12") collapse to
+        the same key, so a later ingest can detect that it SUPERSEDES the
+        earlier assumption. We look at title + summary, drop version tokens and
+        stopwords, and keep a small set of subject keywords. Distinct subjects
+        (Python runtime vs Gemini requirement) keep distinct keys, so unrelated
+        facts are never wrongly collapsed.
+        """
+        text = f"{self.title} {self.summary}".lower()
+        # Drop version-ish tokens (numbers, v2, 3.11, python2, etc.) so the
+        # subject — not its value — drives identity.
+        text = re.sub(r"\bv?\d+(?:\.\d+)*\b", " ", text)
+        text = re.sub(r"[^a-z\s]", " ", text)
+        tokens = [t for t in text.split() if len(t) > 2 and t not in _STOPWORDS]
+        # Sorted unique keywords -> order-independent, stable subject signature.
+        sig = " ".join(sorted(set(tokens)))
+        return f"{self.entry_type}:{sig}"
+
+
+_STOPWORDS = {
+    "the", "and", "for", "use", "uses", "used", "must", "are", "has", "have",
+    "with", "should", "will", "this", "that", "all", "any", "constraint",
+    "requirement", "require", "required", "projects", "project", "build",
+    "agent", "runtime", "likely", "revisit", "earlier", "assumption",
+    "outdated", "session", "prior", "log",
+}

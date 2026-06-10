@@ -95,6 +95,12 @@ class RuleMemoryAgent:
             if e.stale_after_utc is None and e.entry_type != "deadline":
                 e.stale_after_utc = stale_after_default(24, at)
 
+        # Conflict / supersede surfacing: if a freshly-extracted fact shares a
+        # topic-key with an existing ACTIVE fact (same subject, different value
+        # -- e.g. "Use Python 2" -> "Use Python 3", or an updated deadline), mark
+        # the older one superseded so memory never silently keeps a contradiction.
+        self._supersede_conflicts(entries, transcript, at)
+
         # Partner MCP: write the facts to MongoDB through the MongoDB MCP server.
         # Pin _id to entry_id so the authoritative store.upsert below REPLACES the
         # same document (idempotent) instead of creating a second doc that would
@@ -124,6 +130,50 @@ class RuleMemoryAgent:
             f"persisted to {self.store.backend()} (total={self.store.count()})",
         )
         return entries
+
+    def _supersede_conflicts(self, new_entries: list[RuleEntry],
+                             transcript: Transcript,
+                             at: datetime) -> list[dict[str, str]]:
+        """Mark prior ACTIVE facts superseded when a new fact targets the same
+        topic. Returns a list of {old, new, topic} records for the transcript."""
+        # Index existing active facts by topic key.
+        existing_by_key: dict[str, RuleEntry] = {}
+        new_ids = {e.entry_id for e in new_entries}
+        for e in self.store.all():
+            if e.entry_id in new_ids:
+                continue  # a re-ingest replacing the same id is not a conflict
+            if e.status != "active":
+                continue
+            existing_by_key.setdefault(e.topic_key(), e)
+
+        supersessions: list[dict[str, str]] = []
+        seen_new_keys: set[str] = set()
+        for ne in new_entries:
+            key = ne.topic_key()
+            if not key.split(":", 1)[1].strip():
+                continue  # no meaningful subject -> skip
+            old = existing_by_key.get(key)
+            if old is not None and old.entry_id not in seen_new_keys:
+                old.status = "superseded"
+                self.store.upsert(old)
+                supersessions.append(
+                    {"old": old.entry_id, "new": ne.entry_id, "topic": key}
+                )
+                seen_new_keys.add(old.entry_id)
+
+        if supersessions:
+            transcript.add(
+                "flag.conflict",
+                f"{len(supersessions)} prior fact(s) superseded by this ingest",
+                supersessions=supersessions,
+            )
+        else:
+            transcript.add(
+                "flag.conflict",
+                "no conflicts: no prior active fact shares a topic with these",
+                supersessions=[],
+            )
+        return supersessions
 
     # --- step 2: answer "what deadlines expire within N hours" ---
     def answer_deadlines(self, hours: float, transcript: Transcript,

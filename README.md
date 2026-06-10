@@ -39,16 +39,58 @@ python demo.py            # full multi-step transcript, mock mode
 python tests/test_agent.py   # mock-mode end-to-end tests
 ```
 
-Serve the HTTP surface locally:
+Serve the HTTP surface + web UI locally:
 
 ```bash
 cd app
 PYTHONPATH=src uvicorn rulememory.app:app --port 8080
-# then:
+# then open the console UI in a browser:
+open http://localhost:8080/
+# or hit the JSON endpoints directly:
 curl localhost:8080/health
+curl localhost:8080/memory
+curl 'localhost:8080/memory/deadlines?hours=24'
+curl -X POST localhost:8080/ask -H 'content-type: application/json' \
+  -d '{"question":"what build requirements are remembered?"}'
 curl -X POST localhost:8080/run -H 'content-type: application/json' \
   -d '{"source_text":"Submission deadline: 2026-06-11 14:00 PDT.","source_id":"s","question":"what expires soon?","deadline_hours":9000}'
 ```
+
+## Web UI (judge-facing console)
+
+`GET /` serves a single-page agent console (vanilla HTML/CSS/JS embedded in
+`src/rulememory/ui.py` — no framework, no build step, shipped inside the same
+Cloud Run image). From the browser a user can:
+
+- **Paste/edit a rules document + a question** and set the deadline window, then
+  click **Run agent** (it pre-fills a compelling example in one click).
+- **Watch the multi-step plan animate** from the *real* `/run` transcript:
+  `ingest → extract.facts (Gemini) → mcp.insert-many (MongoDB MCP, transport
+  shown) → store.upsert (MongoDB) → flag.conflict → query.deadlines →
+  flag.stale → answer.summarize`, with each step's detail and raw data.
+- **See the grounded answer** with cited fact ids highlighted as chips.
+- **Inspect persisted memory** as a table (id, type, fact, source, expires,
+  status) via `GET /memory`, including a live **stale** flag.
+- **Ask the existing memory** (no re-ingest) via `POST /ask`, proving
+  persistence across sessions.
+- See a **live status badge** from `/health` (mode, Gemini, MongoDB, MCP).
+
+The pre-filled example is a Rapid Agent rules snapshot with a near-term
+submission deadline **and** a `Python 3.12` build requirement that visibly
+**supersedes** a stale `use Python 2` assumption already in memory (seeded at
+startup, only when memory is empty). So a judge sees deadline-tracking, stale
+decay, and conflict/supersede surfacing in a single click.
+
+**Screenshot (what the page shows):** a dark, Google-branded console. Left
+panel: editable *Rules document* + *Question* + *Deadline window* with a
+**▶ Run agent** button. Top-right: status chips reading `mode: live`, green dots
+for `Gemini`, `MongoDB`, `MCP`. Center-right: the animated **Agent plan** —
+eight numbered cards lighting up in sequence, each green-checked when done,
+the `mcp.insert-many` card showing `insert-many via http transport`. Below it
+the **Grounded answer** card with `rapid-rules-002`-style fact ids as blue
+cited chips. Bottom: the **Persisted memory** table with the superseded
+`use Python 2` row tagged `superseded`/`stale` and the new active facts, plus an
+**Ask the existing memory** box.
 
 ## Live mode (env-gated)
 
@@ -66,16 +108,25 @@ your project has access.
 
 ## HTTP endpoints
 
-| Method | Path         | Purpose                                          |
-|--------|--------------|--------------------------------------------------|
-| GET    | `/`          | landing page (renders so the hosted URL is live) |
-| GET    | `/health`    | liveness + live/mock status per backend          |
-| POST   | `/ingest`    | extract facts from a rules page, remember them    |
-| POST   | `/run`       | full multi-step task, returns the transcript      |
-| GET    | `/deadlines` | deadlines expiring within `?hours=24`             |
-| GET    | `/stale`     | flag stale assumptions                            |
-| POST   | `/ask`       | grounded NL answer over remembered facts          |
-| GET    | `/entries`   | dump remembered facts                             |
+| Method | Path                 | Purpose                                          |
+|--------|----------------------|--------------------------------------------------|
+| GET    | `/`                  | **web UI** — single-page agent console           |
+| GET    | `/health`            | liveness + live/mock status per backend          |
+| POST   | `/ingest`            | extract facts from a rules page, remember them   |
+| POST   | `/run`               | full multi-step task, returns the transcript     |
+| GET    | `/deadlines`         | deadlines expiring within `?hours=24`            |
+| GET    | `/stale`             | flag stale assumptions                           |
+| POST   | `/ask`               | grounded NL answer over EXISTING remembered facts|
+| GET    | `/entries`           | dump remembered facts (raw)                      |
+| GET    | `/memory`            | persisted facts + provenance + live stale flags  |
+| GET    | `/memory/deadlines`  | upcoming deadlines within `?hours=N`             |
+
+`/memory`, `/memory/deadlines`, and `POST /ask` are what the web UI calls;
+`/ask` answers over already-persisted memory (no re-ingest), demonstrating
+persistence across sessions. Ingest now also surfaces **conflicts**: a new fact
+that supersedes a prior one on the same topic (e.g. `Python 3.12` superseding
+`use Python 2`) emits a `flag.conflict` transcript step and marks the old fact
+`superseded`.
 
 ## Deploy
 
